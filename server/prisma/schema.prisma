@@ -1,0 +1,303 @@
+// Esquema de base de datos del Sistema de Gestión de Personal.
+// Para producción puede cambiarse "sqlite" por "postgresql" o "mysql"
+// y ajustar DATABASE_URL en .env (ver README).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Usuarios y seguridad ───────────────────────────
+
+model Role {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique
+  description String?
+  permissions String  @default("[]") // arreglo JSON de claves de permiso
+  isSystem    Boolean @default(false)
+  users       User[]
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  name         String
+  passwordHash String
+  active       Boolean   @default(true)
+  roleId       Int
+  role         Role      @relation(fields: [roleId], references: [id])
+  employeeId   Int?      @unique
+  employee     Employee? @relation(fields: [employeeId], references: [id])
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  auditLogs      AuditLog[]
+  reviewedLeaves LeaveRequest[] @relation("LeaveReviewer")
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userName  String?
+  action    String // CREAR, EDITAR, ELIMINAR, LOGIN, LOGIN_FALLIDO, APROBAR, ...
+  entity    String
+  entityId  String?
+  details   String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity])
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// ─────────────────────────── Organización ───────────────────────────
+
+model Area {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  description String?
+  positions   Position[]
+  employees   Employee[]
+}
+
+model Position {
+  id          Int        @id @default(autoincrement())
+  name        String
+  description String?
+  areaId      Int?
+  area        Area?      @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  employees   Employee[]
+}
+
+model Schedule {
+  id           Int        @id @default(autoincrement())
+  name         String     @unique
+  startTime    String // "08:00"
+  endTime      String // "17:00"
+  toleranceMin Int        @default(10)
+  workDays     String     @default("1,2,3,4,5") // 0=domingo ... 6=sábado
+  employees    Employee[]
+}
+
+// ─────────────────────────── Personal ───────────────────────────
+
+model Employee {
+  id                    Int       @id @default(autoincrement())
+  code                  String    @unique
+  docType               String    @default("DNI")
+  docNumber             String    @unique
+  firstName             String
+  lastName              String
+  birthDate             DateTime?
+  gender                String?
+  maritalStatus         String?
+  nationality           String?
+  address               String?
+  phone                 String?
+  email                 String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  hireDate     DateTime
+  endDate      DateTime?
+  status       String    @default("ACTIVO") // ACTIVO, SUSPENDIDO, CESADO
+  contractType String? // INDETERMINADO, PLAZO_FIJO, LOCACION, PRACTICAS
+  salary       Float?
+  bankName     String?
+  bankAccount  String?
+  isFieldTech  Boolean   @default(false)
+  areaId       Int?
+  area         Area?     @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  positionId   Int?
+  position     Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  scheduleId   Int?
+  schedule     Schedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  cvPath    String?
+  cvName    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user           User?
+  history        EmploymentHistory[]
+  experiences    WorkExperience[]
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  assignments    Assignment[]
+  participations TrainingParticipant[]
+  documents      Document[]
+}
+
+// Movimientos internos: ingreso, cambios de cargo/área, ceses, etc.
+model EmploymentHistory {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date        DateTime
+  type        String // INGRESO, CAMBIO_CARGO, CAMBIO_AREA, CAMBIO_ESTADO, CAMBIO_CONTRATO, CESE, OTRO
+  description String
+  createdBy   String?
+  createdAt   DateTime @default(now())
+}
+
+// Experiencia laboral previa (externa)
+model WorkExperience {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  company     String
+  position    String
+  startDate   DateTime?
+  endDate     DateTime?
+  description String?
+}
+
+// ─────────────────────────── Asistencia ───────────────────────────
+
+model Attendance {
+  id            Int       @id @default(autoincrement())
+  employeeId    Int
+  employee      Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date          String // YYYY-MM-DD (hora local de la empresa)
+  checkIn       DateTime?
+  checkOut      DateTime?
+  status        String // PUNTUAL, TARDANZA, FALTA, JUSTIFICADO, VACACIONES, PERMISO
+  lateMinutes   Int       @default(0)
+  workedMinutes Int?
+  isField       Boolean   @default(false)
+  projectId     Int?
+  project       Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  location      String?
+  checkInLat    Float?
+  checkInLng    Float?
+  checkOutLat   Float?
+  checkOutLng   Float?
+  source        String    @default("SISTEMA") // SISTEMA, MANUAL, AUTOMATICO
+  notes         String?
+
+  @@unique([employeeId, date])
+  @@index([date])
+}
+
+// ─────────────────────────── Permisos y vacaciones ───────────────────────────
+
+model LeaveRequest {
+  id            Int       @id @default(autoincrement())
+  employeeId    Int
+  employee      Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type          String // VACACIONES, PERMISO, DESCANSO_MEDICO, LICENCIA, OTRO
+  startDate     String // YYYY-MM-DD
+  endDate       String // YYYY-MM-DD
+  days          Int
+  reason        String?
+  status        String    @default("PENDIENTE") // PENDIENTE, APROBADO, RECHAZADO, CANCELADO
+  reviewedById  Int?
+  reviewedBy    User?     @relation("LeaveReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt    DateTime?
+  reviewComment String?
+  filePath      String?
+  fileName      String?
+  createdAt     DateTime  @default(now())
+
+  @@index([startDate, endDate])
+}
+
+// ─────────────────────────── Proyectos ───────────────────────────
+
+model Project {
+  id          Int          @id @default(autoincrement())
+  code        String       @unique
+  name        String
+  client      String?
+  location    String?
+  description String?
+  startDate   DateTime?
+  endDate     DateTime?
+  status      String       @default("PLANIFICADO") // PLANIFICADO, EN_CURSO, PAUSADO, FINALIZADO, CANCELADO
+  createdAt   DateTime     @default(now())
+  assignments Assignment[]
+  attendances Attendance[]
+}
+
+model Assignment {
+  id         Int       @id @default(autoincrement())
+  projectId  Int
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employeeId Int
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  role       String?
+  startDate  DateTime
+  endDate    DateTime?
+  status     String    @default("ASIGNADO") // ASIGNADO, EN_CAMPO, FINALIZADO, CANCELADO
+  notes      String?
+  createdAt  DateTime  @default(now())
+}
+
+// ─────────────────────────── Capacitaciones y documentos ───────────────────────────
+
+model Training {
+  id           Int                   @id @default(autoincrement())
+  name         String
+  provider     String?
+  modality     String? // PRESENCIAL, VIRTUAL, MIXTA
+  startDate    DateTime
+  endDate      DateTime?
+  hours        Float?
+  description  String?
+  validityDays Int? // vigencia del certificado emitido (opcional)
+  createdAt    DateTime              @default(now())
+  participants TrainingParticipant[]
+  documents    Document[]
+}
+
+model TrainingParticipant {
+  id         Int      @id @default(autoincrement())
+  trainingId Int
+  training   Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  status     String   @default("INSCRITO") // INSCRITO, APROBADO, DESAPROBADO, NO_ASISTIO
+  score      Float?
+
+  @@unique([trainingId, employeeId])
+}
+
+model Document {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type        String // CERTIFICADO, CONTRATO, CV, SCTR, EXAMEN_MEDICO, LICENCIA_CONDUCIR, OTRO
+  name        String
+  issuer      String?
+  issueDate   DateTime?
+  expiryDate  DateTime?
+  trainingId  Int?
+  training    Training? @relation(fields: [trainingId], references: [id], onDelete: SetNull)
+  filePath    String?
+  fileName    String?
+  notes       String?
+  lastAlertAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([expiryDate])
+}
+
+model AlertLog {
+  id         Int      @id @default(autoincrement())
+  sentAt     DateTime @default(now())
+  recipients String
+  subject    String
+  documents  Int
+  success    Boolean
+  error      String?
+}
